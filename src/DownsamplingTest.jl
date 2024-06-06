@@ -5,6 +5,8 @@ using FFTW
 using LaTeXStrings
 using Printf
 
+export do_plot
+
 function h(t, f, tau, a, b)
     return exp.(.-abs.(t)./tau) .* (a .* cos.(2π.*f.*t) .+ b .* sin.(2π.*f.*t))
 end
