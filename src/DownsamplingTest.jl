@@ -59,20 +59,13 @@ function downsample(h, nd=2)
     return irfft(hf, length(hh))[1:nd:length(h)]
 end
 
-function do_plot()
-    sigma = 1.0
-    
-    ts = collect(-10:0.01:10)
-    T = ts[end]
-    dt = ts[2]-ts[1]
+function do_plot(; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
+    ts = collect(-T:dt:T)
     fs = 1/dt
     fny = fs/2
 
-    f0 = 2.0
-    tau = 2.0
-
-    a = 2*randn()
-    b = 2*randn()
+    a = amplitude*randn()
+    b = amplitude*randn()
 
     hh = h(ts, f0, tau, a, b)
 
