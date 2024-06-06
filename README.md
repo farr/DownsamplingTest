@@ -22,3 +22,11 @@ spectral density in the second figure.  The second figure will include vertical
 lines at Nyquist and downsampling by factors of 2, 4, ..., with the computed
 time-domain S/N for each downsampling factor indicated.  The function will also
 print the computed time-domain S/N for each downsampling factor.
+
+Example waveform: 
+
+![Example waveform](h_of_t.png)
+
+S/N Plot:
+
+![S/N plot](fd_snr.png)
