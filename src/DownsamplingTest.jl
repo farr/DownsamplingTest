@@ -165,4 +165,20 @@ function do_sampling(ts, hh; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, si
     vcat(dfs...)
 end
 
+T = 10.0
+dt = 0.01
+ts = collect(-T:dt:T)
+
+amplitude = 2.0
+f0 = 2.0
+tau0 = 2.0
+
+a,b = amplitude*randn(2)
+hh = h(ts, f0, tau0, a, b)
+_, f = do_plot(ts, hh)
+f
+
+df = do_sampling(ts, hh)
+pairplot([PairPlots.Series(d[:,[:a,:b,:f,:tau]], label=string(d[1,:ds]), color=c, strokecolor=c) for (d,c) in zip(groupby(df, :ds), Makie.wong_colors(0.5))]..., PairPlots.Truth((a=a, b=b, f=f0, tau=tau0), label="Truth", color=:black))
+
 end # module DownsamplingTest
