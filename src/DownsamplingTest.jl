@@ -1,9 +1,13 @@
 module DownsamplingTest
 
 using CairoMakie
+using DataFrames
 using FFTW
 using LaTeXStrings
+using PairPlots
 using Printf
+using Turing
+using Zygote
 
 export do_plot
 
@@ -61,13 +65,18 @@ end
 
 function do_plot(; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
     ts = collect(-T:dt:T)
-    fs = 1/dt
-    fny = fs/2
 
     a = amplitude*randn()
     b = amplitude*randn()
 
     hh = h(ts, f0, tau, a, b)
+
+    do_plot(ts, hh, amplitude=amplutude, f0=f0, tau=tau, T=T, dt=dt, sigma=sigma)
+end
+
+function do_plot(ts, hh; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
+    fs = 1/dt
+    fny = fs/2
 
     f_h = Figure()
     a_h = Axis(f_h[1,1], xlabel=L"t", ylabel=L"h(t)")
@@ -104,6 +113,56 @@ function do_plot(; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
     end
 
     f_h, f
+end
+
+@model function ds_model(ts, data, sigma; amplitude=2.0, f0=2.0, tau0=2.0)
+    a ~ Normal(0, amplitude)
+    b ~ Normal(0, amplitude)
+
+    log_f ~ Uniform(log(f0/2), log(2*f0))
+    log_tau ~ Uniform(log(tau0/2), log(2*tau0))
+
+    f = exp(log_f)
+    tau = exp(log_tau)
+
+    hh = h(ts, f, tau, a, b)
+    data .~ Normal.(hh, sigma)
+
+    (f=f, tau=tau, h=hh)
+end
+
+function do_sampling(; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
+    ts = collect(-T:dt:T)
+    fs = 1/dt
+
+    a = amplitude*randn()
+    b = amplitude*randn()
+
+    hh = h(ts, f0, tau, a, b)
+
+    do_sampling(ts, hh; amplitude=amplitude, f0=f0, tau=tau, T=T, dt=dt, sigma=sigma)
+end
+
+function do_sampling(ts, hh; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
+    dfs = []
+    for ds in [1, 2, 4, 8, 16]
+        hd = downsample(hh, ds)
+        td = ts[1:ds:end]
+
+        data = hd[td.>=0]
+
+        model = ds_model(td[td.>=0], data, sigma, amplitude=amplitude, f0=f0, tau0=tau)
+        chain = sample(model, NUTS(), 1000)
+        genq = generated_quantities(model, chain)
+
+        df = DataFrame(chain)
+        df[:, :f] = vec([x.f for x in genq])
+        df[:, :tau] = vec([x.tau for x in genq])
+        df[:, :ds] .= ds
+
+        push!(dfs, df)
+    end
+    vcat(dfs...)
 end
 
 end # module DownsamplingTest
