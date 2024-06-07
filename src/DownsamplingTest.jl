@@ -1,6 +1,7 @@
 module DownsamplingTest
 
 using CairoMakie
+using CSV
 using DataFrames
 using FFTW
 using LaTeXStrings
@@ -131,7 +132,7 @@ end
     (f=f, tau=tau, h=hh)
 end
 
-function do_sampling(; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
+function do_sampling(; amplitude=2.0, f0=2.0, tau0=2.0, T=10.0, dt=0.01, sigma=1.0, ds=[1,2,4,8,16])
     ts = collect(-T:dt:T)
     fs = 1/dt
 
@@ -140,18 +141,18 @@ function do_sampling(; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.
 
     hh = h(ts, f0, tau, a, b)
 
-    do_sampling(ts, hh; amplitude=amplitude, f0=f0, tau=tau, T=T, dt=dt, sigma=sigma)
+    do_sampling(ts, hh; amplitude=amplitude, f0=f0, tau0=tau, T=T, dt=dt, sigma=sigma, ds=ds)
 end
 
-function do_sampling(ts, hh; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
+function do_sampling(ts, hh; amplitude=2.0, f0=2.0, tau0=2.0, T=10.0, dt=0.01, sigma=1.0, ds=[1,2,4,8,16])
     dfs = []
-    for ds in [1, 2, 4, 8, 16]
+    for ds in ds
         hd = downsample(hh, ds)
         td = ts[1:ds:end]
 
         data = hd[td.>=0]
 
-        model = ds_model(td[td.>=0], data, sigma, amplitude=amplitude, f0=f0, tau0=tau)
+        model = ds_model(td[td.>=0], data, sigma, amplitude=amplitude, f0=f0, tau0=tau0)
         chain = sample(model, NUTS(), 1000)
         genq = generated_quantities(model, chain)
 
@@ -165,20 +166,66 @@ function do_sampling(ts, hh; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, si
     vcat(dfs...)
 end
 
-T = 10.0
-dt = 0.01
-ts = collect(-T:dt:T)
+function random_params(; amplitude=2.0, f0=2.0, tau0=2.0, T=10.0, dt=0.01, sigma=1.0)
+    a = amplitude*randn()
+    b = amplitude*randn()
 
-amplitude = 2.0
-f0 = 2.0
-tau0 = 2.0
+    (a=a, b=b, f=f0, tau=tau)
+end
 
-a,b = amplitude*randn(2)
-hh = h(ts, f0, tau0, a, b)
-_, f = do_plot(ts, hh)
-f
+function safe_and_unsafe_downsampling(ts, hh, sigma; safety_factor = 10.0)
+    dt = ts[2]-ts[1]
+    fsamp = 1/dt
+    fny = fsamp/2
 
-df = do_sampling(ts, hh)
-pairplot([PairPlots.Series(d[:,[:a,:b,:f,:tau]], label=string(d[1,:ds]), color=c, strokecolor=c) for (d,c) in zip(groupby(df, :ds), Makie.wong_colors(0.5))]..., PairPlots.Truth((a=a, b=b, f=f0, tau=tau0), label="Truth", color=:black))
+    S_h = sigma^2/fny
+
+    sel = ts .> 0
+    hpos = hh[sel]
+    fs = rfftfreq(sum(sel), fsamp)
+    hf = dt .* rfft(hpos)
+    
+    snr_numer = real.(4 .* fs .* hf .* conj(hf))
+
+    if snr_numer[end] > S_h / safety_factor
+        return (1,1) # There is no good downsampling
+    end
+
+    ds_safe = 1
+    ds_unsafe = 2
+    while snr_numer[div(length(snr_numer), ds_unsafe)] < S_h / safety_factor
+        ds_safe = ds_unsafe
+        ds_unsafe = ds_unsafe * 2
+    end
+
+    return (ds_safe, ds_unsafe)
+end
+
+function playground() 
+    sigma = 1.0
+
+    T = 10.0
+    dt = 0.01
+    ts = collect(-T:dt:T)
+
+    amplitude = 2.0
+    f0 = 1.0
+    tau0 = 2.0
+
+    a,b = amplitude*randn(2)
+    hh = h(ts, f0, tau0, a, b)
+
+    (ds_safe, ds_unsafe) = safe_and_unsafe_downsampling(ts, hh, sigma)
+
+    f_h, f = do_plot(ts, hh)
+    f
+    f_h
+
+    df = do_sampling(ts, hh, ds=[1, ds_safe, ds_unsafe]; f0=f0, tau0=tau0)
+    pairplot([PairPlots.Series(d[:,[:a,:b,:f,:tau]], label=string(d[1,:ds]), color=c, strokecolor=c) for (d,c) in zip(groupby(df, :ds), Makie.wong_colors(0.5))]..., PairPlots.Truth((a=a, b=b, f=f0, tau=tau0), label="Truth", color=:black))
+
+    bad_waveform = DataFrame(Dict(:t => ts, :h => hh))
+    CSV.write("bad_waveform.csv", bad_waveform)
+end
 
 end # module DownsamplingTest
