@@ -5,12 +5,12 @@ using CSV
 using DataFrames
 using FFTW
 using LaTeXStrings
+using Optim
 using PairPlots
 using Printf
+using ProgressLogging
 using Turing
 using Zygote
-
-export do_plot
 
 function h(t, f, tau, a, b)
     return exp.(.-abs.(t)./tau) .* (a .* cos.(2π.*f.*t) .+ b .* sin.(2π.*f.*t))
@@ -22,6 +22,13 @@ end
 
 function snr_fd(hf, sigma, df, fny)
     sqrt(real(4*sum(hf .* conj(hf)) / (sigma^2/fny) * df))
+end
+
+function relative_log_likelihood(t, d, h, sigma)
+    r = d .- h 
+    mask = t .>= 0
+
+    ll = -0.5 * sum(r[mask] .* r[mask]) / (sigma*sigma) + 0.5 * sum(d[mask] .* d[mask]) / (sigma*sigma)
 end
 
 function reflect(h)
@@ -53,6 +60,16 @@ function zero_pad(h)
     return vcat(h, zeros(n - length(h)))
 end
 
+function fourier_downsample(h, nd=2)
+    nh = length(h)
+    hf = rfft(h)
+
+    nhd = div(nh, nd)
+    nfd = div(nhd, 2) + 1
+
+    irfft(hf[1:nfd], nhd)/nd
+end
+
 function downsample(h, nd=2)
     hh = zero_pad(taper(h, 0.1))
     hf = rfft(hh)
@@ -64,6 +81,46 @@ function downsample(h, nd=2)
     return irfft(hf, length(hh))[1:nd:length(h)]
 end
 
+function downsample_times(t, nd=2)
+    t[1:nd:end]
+end
+
+function find_differences_between_noise_and_signal_terms()
+    ll_diffs = []
+    @progress for i in 1:1000
+        a,b = 2.0*randn(2)
+
+        f0 = 2.0
+        tau = 2.0
+        T = 10.0
+        dt = 0.01
+        sigma = 1.0
+
+        ts = collect(-T:dt:T)
+        hh = h(ts, f0, tau, a, b)
+
+        d0 = hh
+        dd = hh + sigma*randn(length(hh))
+
+        d0_down = downsample(d0, 2)
+        dd_down = downsample(dd, 2)
+        ts_down = downsample_times(ts, 2)
+        hh_down = h(ts_down, f0, tau, a, b)
+
+        ll0 = relative_log_likelihood(ts, d0, hh, sigma)
+        lld = relative_log_likelihood(ts, dd, hh, sigma)
+        
+        ll0_down = relative_log_likelihood(ts_down, d0_down, hh_down, sigma/sqrt(2))
+        lld_down = relative_log_likelihood(ts_down, dd_down, hh_down, sigma/sqrt(2))
+
+        ll_diff_0 = ll0 - ll0_down
+        ll_diff = lld - lld_down
+
+        push!(ll_diffs, (ll0=ll0, lld=lld, ll0_down=ll0_down, lld_down=lld_down, ll_diff_0=ll_diff_0, ll_diff=ll_diff))
+    end
+    DataFrame(ll_diffs)
+end
+
 function do_plot(; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
     ts = collect(-T:dt:T)
 
@@ -72,10 +129,11 @@ function do_plot(; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
 
     hh = h(ts, f0, tau, a, b)
 
-    do_plot(ts, hh, amplitude=amplutude, f0=f0, tau=tau, T=T, dt=dt, sigma=sigma)
+    do_plot(ts, hh; sigma=sigma)
 end
 
-function do_plot(ts, hh; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=1.0)
+function do_plot(ts, hh; sigma=1.0)
+    dt = ts[2]-ts[1]
     fs = 1/dt
     fny = fs/2
 
@@ -86,7 +144,7 @@ function do_plot(ts, hh; amplitude=2.0, f0=2.0, tau=2.0, T=10.0, dt=0.01, sigma=
     hf = dt .* rfft(hh[ts .>= 0])
     fs = rfftfreq(length(hh[ts .>= 0]), fs)
 
-    snr = snr_td(ts[ts.>=0], hh[ts.>=0], sigma)
+    snr = snr_td(ts, hh, sigma)
 
     f = Figure()
     a = Axis(f[1,1], xscale=log10, yscale=log10,
@@ -152,7 +210,7 @@ function do_sampling(ts, hh; amplitude=2.0, f0=2.0, tau0=2.0, T=10.0, dt=0.01, s
 
         data = hd[td.>=0]
 
-        model = ds_model(td[td.>=0], data, sigma, amplitude=amplitude, f0=f0, tau0=tau0)
+        model = ds_model(td[td.>=0], data, sigma/sqrt(ds), amplitude=amplitude, f0=f0, tau0=tau0)
         chain = sample(model, NUTS(), 1000)
         genq = generated_quantities(model, chain)
 
@@ -173,7 +231,7 @@ function random_params(; amplitude=2.0, f0=2.0, tau0=2.0, T=10.0, dt=0.01, sigma
     (a=a, b=b, f=f0, tau=tau)
 end
 
-function safe_and_unsafe_downsampling(ts, hh, sigma; safety_factor = 10.0)
+function safe_and_unsafe_downsampling(ts, hh, sigma; safety_factor = 1.0)
     dt = ts[2]-ts[1]
     fsamp = 1/dt
     fny = fsamp/2
@@ -202,30 +260,52 @@ function safe_and_unsafe_downsampling(ts, hh, sigma; safety_factor = 10.0)
 end
 
 function playground() 
-    sigma = 1.0
-
-    T = 10.0
-    dt = 0.01
-    ts = collect(-T:dt:T)
-
-    amplitude = 2.0
+    amplitude = 4.0
     f0 = 1.0
     tau0 = 2.0
 
     a,b = amplitude*randn(2)
-    hh = h(ts, f0, tau0, a, b)
 
-    (ds_safe, ds_unsafe) = safe_and_unsafe_downsampling(ts, hh, sigma)
+    factor = 1.0
+    sigma = 1.0 * sqrt(factor)
+    dt = 0.01 / factor
 
-    f_h, f = do_plot(ts, hh)
+    T = 10.0
+    ts = collect(-T:dt:T)
+
+    h0 = h(ts, f0, tau0, a, b)
+
+    data = h0 .+ sigma*randn(length(h0))
+
+    (ds_safe, ds_unsafe) = safe_and_unsafe_downsampling(ts, h0, sigma)
+
+    f_h, f = do_plot(ts, h0, dt=dt, sigma=sigma)
     f
     f_h
 
-    df = do_sampling(ts, hh, ds=[1, ds_safe, ds_unsafe]; f0=f0, tau0=tau0)
-    pairplot([PairPlots.Series(d[:,[:a,:b,:f,:tau]], label=string(d[1,:ds]), color=c, strokecolor=c) for (d,c) in zip(groupby(df, :ds), Makie.wong_colors(0.5))]..., PairPlots.Truth((a=a, b=b, f=f0, tau=tau0), label="Truth", color=:black))
+    for d in [1, 2, 4, 8, 16]
+        hd = fourier_downsample(data, d)
+        td = ts[1:d:end]
 
-    bad_waveform = DataFrame(Dict(:t => ts, :h => hh))
-    CSV.write("bad_waveform.csv", bad_waveform)
+        h0d = fourier_downsample(h0, d)
+        x0 = [log(f0), log(tau0), a, b]
+        sel = td .> 0
+
+        ll = relative_log_likelihood(td[sel], hd[sel], h0d[sel], sigma/sqrt(d))
+
+        ll_func = x -> -relative_log_likelihood(td[sel], hd[sel], h(td, exp(x[1]), exp(x[2]), x[3], x[4])[sel], sigma/sqrt(d))
+        opt_result = optimize(ll_func, x0, inplace=false) 
+        logf_opt, logtau_opt, a_opt, b_opt = Optim.minimizer(opt_result)
+        ll_opt = -Optim.minimum(opt_result)
+
+        println(@sprintf("ds = %d: LL = %.1f \t LL_opt = %.1f", d, ll, ll_opt))
+    end
+
+    df = do_sampling(ts, data, ds=[1, 2, 4]; f0=f0, tau0=tau0, sigma=sigma)
+    pairplot(PairPlots.Truth((a=a, b=b, f=f0, tau=tau0), label="Truth", color=:black), [PairPlots.Series(d[:,[:a,:b,:f,:tau]], label=string(d[1,:ds]), color=c, strokecolor=c) for (d,c) in zip(groupby(df, :ds), Makie.wong_colors(0.5))]...)
+
+    # bad_waveform = DataFrame(Dict(:t => ts, :h => hh))
+    # CSV.write("bad_waveform.csv", bad_waveform)
 end
 
 end # module DownsamplingTest
